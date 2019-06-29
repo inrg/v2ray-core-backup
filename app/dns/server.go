@@ -6,6 +6,7 @@ package dns
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,6 +63,9 @@ func New(ctx context.Context, config *Config) (*Server, error) {
 		address := endpoint.Address.AsAddress()
 		if address.Family().IsDomain() && address.Domain() == "localhost" {
 			server.clients = append(server.clients, NewLocalNameServer())
+		} else if address.Family().IsDomain() && strings.HasPrefix(address.Domain(), "DOH_") {
+			dohHost := address.Domain()[4:]
+			server.clients = append(server.clients, NewDOHNameServer(dohHost, 10*time.Second))
 		} else {
 			dest := endpoint.AsDestination()
 			if dest.Network == net.Network_Unknown {
