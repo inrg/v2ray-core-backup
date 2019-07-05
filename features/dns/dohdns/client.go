@@ -10,12 +10,6 @@ import (
 	doh "github.com/babolivier/go-doh-client"
 )
 
-func panicHandle() {
-	if r := recover(); r != nil {
-		newError("dohdns panic handled: ", r).AtDebug().WriteToLog()
-	}
-}
-
 // Client is an implementation of dns.Client, which queries localhost for DNS.
 type Client struct {
 	resolver doh.Resolver
@@ -38,7 +32,6 @@ func (c *Client) LookupIP(host string) ([]net.IP, error) {
 	newError("LookupIP using DOH: ", host).AtDebug().WriteToLog()
 
 	var wg sync.WaitGroup
-	var co sync.Once
 	rch := make(chan net.IP)
 	resolvedIPs := make([]net.IP, 0)
 
@@ -47,7 +40,6 @@ func (c *Client) LookupIP(host string) ([]net.IP, error) {
 
 	// resolver will re-use keep-alive connection to DOH server
 	go func() {
-		defer panicHandle()
 		defer wg.Done()
 		rec, _, err := c.resolver.LookupA(host)
 		if err == nil {
@@ -61,7 +53,6 @@ func (c *Client) LookupIP(host string) ([]net.IP, error) {
 	}()
 
 	go func() {
-		defer panicHandle()
 		defer wg.Done()
 		rec, _, err := c.resolver.LookupAAAA(host)
 		if err == nil {
@@ -77,22 +68,24 @@ func (c *Client) LookupIP(host string) ([]net.IP, error) {
 	// wait for results
 	go func() {
 		wg.Wait()
-		co.Do(func() {
-			close(rch)
-		})
+		close(rch)
 	}()
 
-	// timeout waiter, resolver using http.Client, has a timeout of fixed 30s
-	go func() {
-		<-time.After(c.timeout)
-		co.Do(func() {
-			close(rch)
-		})
-	}()
-
-	for ip := range rch {
-		resolvedIPs = append(resolvedIPs, ip)
+	timeout := time.After(c.timeout)
+	for {
+		select {
+		case ip, ok := <-rch:
+			if ok {
+				resolvedIPs = append(resolvedIPs, ip)
+			} else {
+				goto EndForIP
+			}
+		case <-timeout:
+			newError("DOH timed out: ", host).AtDebug().WriteToLog()
+			goto EndForIP
+		}
 	}
+EndForIP:
 
 	if len(resolvedIPs) == 0 {
 		return nil, dns.ErrEmptyResponse
@@ -107,12 +100,6 @@ func (c *Client) LookupIPv4(host string) ([]net.IP, error) {
 	rch := make(chan net.IP)
 
 	go func() {
-		<-time.After(c.timeout)
-		close(rch)
-	}()
-
-	go func() {
-		defer panicHandle()
 		r, _, err := c.resolver.LookupA(host)
 		if err == nil {
 			for _, ip := range r {
@@ -122,15 +109,31 @@ func (c *Client) LookupIPv4(host string) ([]net.IP, error) {
 				}
 			}
 		}
+		close(rch)
 	}()
 
-	ipv4 := make([]net.IP, 0)
-	if ip, ok := <-rch; ok {
-		ipv4 = append(ipv4, ip)
-	} else {
+	resolvedIPs := make([]net.IP, 0)
+	timeout := time.After(c.timeout)
+	for {
+		select {
+		case ip, ok := <-rch:
+			if ok {
+				resolvedIPs = append(resolvedIPs, ip)
+			} else {
+				goto EndFor4
+			}
+		case <-timeout:
+			newError("DOH timed out: ", host).AtDebug().WriteToLog()
+			goto EndFor4
+		}
+	}
+EndFor4:
+
+	if len(resolvedIPs) == 0 {
 		return nil, dns.ErrEmptyResponse
 	}
-	return ipv4, nil
+
+	return resolvedIPs, nil
 }
 
 // LookupIPv6 implements IPv6Lookup.
@@ -140,12 +143,6 @@ func (c *Client) LookupIPv6(host string) ([]net.IP, error) {
 	rch := make(chan net.IP)
 
 	go func() {
-		<-time.After(c.timeout)
-		close(rch)
-	}()
-
-	go func() {
-		defer panicHandle()
 		r, _, err := c.resolver.LookupAAAA(host)
 		if err == nil {
 			for _, ip := range r {
@@ -155,15 +152,31 @@ func (c *Client) LookupIPv6(host string) ([]net.IP, error) {
 				}
 			}
 		}
+		close(rch)
 	}()
 
-	ipv6 := make([]net.IP, 0)
-	if ip, ok := <-rch; ok {
-		ipv6 = append(ipv6, ip)
-	} else {
+	resolvedIPs := make([]net.IP, 0)
+	timeout := time.After(c.timeout)
+	for {
+		select {
+		case ip, ok := <-rch:
+			if ok {
+				resolvedIPs = append(resolvedIPs, ip)
+			} else {
+				goto EndFor6
+			}
+		case <-timeout:
+			newError("DOH timed out: ", host).AtDebug().WriteToLog()
+			goto EndFor6
+		}
+	}
+EndFor6:
+
+	if len(resolvedIPs) == 0 {
 		return nil, dns.ErrEmptyResponse
 	}
-	return ipv6, nil
+
+	return resolvedIPs, nil
 }
 
 // New create a new dns.Client
